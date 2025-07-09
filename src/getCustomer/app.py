@@ -1,94 +1,102 @@
 import os
 import mysql.connector
-from flask import Flask, request, render_template, jsonify # Added jsonify for better JSON responses
+from flask import Flask, request, jsonify
 from flask_cors import CORS
-import json
 
 app = Flask(__name__)
+# Initialize CORS for the Flask app.
+# This allows cross-origin requests, which is essential for front-end applications
+# hosted on a different domain/port to interact with this API.
 CORS(app)
 
-# Database connection details from environment variables
+# Database connection details retrieved from environment variables.
+# This is a secure way to handle sensitive information, keeping it out of the codebase.
 USER = os.getenv('MYSQL_USER')
 PASSWORD = os.environ.get('MYSQL_PASSWORD')
 HOST = os.environ.get('MYSQL_HOST')
 DATABASE = os.getenv('MYSQL_DATABASE')
 
-# Initialize database connection globally
-# It's generally better to manage connections per request or use a connection pool
-# but for a simple script, this global approach is common.
-mydb = None
-mycursor = None
-
-try:
-    mydb = mysql.connector.connect(
-        host=str(HOST),
-        user=str(USER),
-        passwd=str(PASSWORD),
-        db=str(DATABASE)
-    )
-    mycursor = mydb.cursor()
-    print("Database successfully connected")
-
-except Exception as e:
-    print("Could not connect to Database")
-    print(f"Error: {e}") # Use f-strings for better error message formatting
+def get_db_connection():
+    """
+    Establishes and returns a new MySQL database connection.
+    This function is called for each request to ensure a fresh and active connection,
+    which is a more robust approach than a single global connection, especially in
+    multi-threaded environments.
+    """
+    try:
+        conn = mysql.connector.connect(
+            host=str(HOST),
+            user=str(USER),
+            passwd=str(PASSWORD),
+            db=str(DATABASE)
+        )
+        print("Database connection established for request.")
+        return conn
+    except Exception as e:
+        print(f"ERROR: Could not connect to Database: {e}")
+        # Re-raise the exception to be caught by the route's error handling
+        raise
 
 @app.route('/')
 def home():
     """
     Home route for the API.
+    Returns a simple welcome message.
     """
-    return 'getCustomer version 1.1'
+    # Using jsonify for consistent API response format, even for simple messages.
+    return jsonify({'message': 'Welcome to getCustomerList version 1.1'})
 
-@app.route('/customer/<id>')
-def getCustomer(id):
+@app.route('/customers', methods=['GET'])
+def getCustomerList():
     """
-    Retrieves customer details by ID from the database.
-    Args:
-        id (str): The ID of the customer to retrieve.
+    Retrieves a list of customers (id, customerName) from the database.
+    The results are ordered by customerName and then by id.
     Returns:
-        JSON: Customer data or an error message.
+        JSON: A list of customer dictionaries or an error message.
     """
-    # Ensure the database connection is active
-    if not mydb or not mydb.is_connected():
-        try:
-            global mydb, mycursor # Re-establish connection if lost
-            mydb = mysql.connector.connect(
-                host=str(HOST),
-                user=str(USER),
-                passwd=str(PASSWORD),
-                db=str(DATABASE)
-            )
-            mycursor = mydb.cursor()
-            print("Re-established database connection")
-        except Exception as e:
-            return jsonify({"error": f"Database connection failed: {e}"}), 500
-
-    sql = "SELECT * FROM customer WHERE id = %s" # Use %s for parameter substitution
+    conn = None # Initialize connection to None
+    cursor = None # Initialize cursor to None
     try:
-        # Pass parameters as a tuple or dictionary, %s is generally safer for positional args
-        mycursor.execute(sql, (str(id),)) 
-        
-        columns = [column[0] for column in mycursor.description] # Get column names directly
-        myresult = mycursor.fetchall()
-        
+        conn = get_db_connection() # Get a new connection for this request
+        cursor = conn.cursor()
+
+        sql = "SELECT id, customerName FROM customer ORDER BY customerName, id"
+        cursor.execute(sql)
+
+        # Get column names from the cursor description to create dictionary keys
+        columns = [column[0] for column in cursor.description]
+        myresult = cursor.fetchall()
+
         json_data = []
         for result in myresult:
+            # Combine column names with fetched data to create a list of dictionaries
             json_data.append(dict(zip(columns, result)))
 
-        print(json_data)
-        
-        if json_data:
-            # jsonify automatically handles serialization and sets Content-Type header
-            return jsonify(json_data[0]) 
-        else:
-            # Return a 404 Not Found status if no customer is found
-            return jsonify({"message": f"No customer found with ID: {id}"}), 404
-            
-    except Exception as e:
-        # Return a 500 Internal Server Error for database retrieval issues
-        return jsonify({"error": f"Could not retrieve records from DB: {e}"}), 500
+        print(f"Retrieved customer data: {json_data}")
+        # Return the data as a JSON response with a 200 OK status
+        return jsonify(json_data), 200
 
-# This ensures the Flask app runs only when the script is executed directly
+    except mysql.connector.Error as err:
+        # Catch specific database errors for more precise handling
+        print(f"Database error: {err}")
+        return jsonify({'error': f"Database query failed: {err}"}), 500
+    except Exception as e:
+        # Catch any other unexpected errors
+        print(f"An unexpected error occurred: {e}")
+        return jsonify({'error': f"An internal server error occurred: {e}"}), 500
+    finally:
+        # Ensure the cursor and connection are closed, regardless of success or failure
+        if cursor:
+            cursor.close()
+            print("Cursor closed.")
+        if conn and conn.is_connected():
+            conn.close()
+            print("Database connection closed.")
+
+# This block ensures that the Flask development server runs only when the script
+# is executed directly (e.g., `python app.py`), not when imported as a module.
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=8080)
+    # Run the Flask application on all available network interfaces (0.0.0.0)
+    # and on port 8080. debug=True enables debug mode, which provides
+    # a debugger and auto-reloader, useful during development.
+    app.run(host="0.0.0.0", port=8080, debug=True)
